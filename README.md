@@ -1,0 +1,1 @@
+"Trick best effort locking and queueing" - a best effort library to make a PHP exclusive locking using (probably atomic) filesystem operations (mkdir/rename) or/and (probably ACID) database operations (via PDO).
