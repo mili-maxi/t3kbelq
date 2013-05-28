@@ -8,7 +8,13 @@
  * licensed under : http://www.apache.org/licenses/LICENSE-2.0.html
 */
 
-// simple file based locking mechanism and simple directory based queue mechanism
+/* - Simple file and PDO based locking mechanism
+ * - Simple directory and PDO based queue mechanism
+ * 
+ * Not implemented, since php built in functionality:
+ * - System V semaphores
+ * - php pthreads functionality
+ */
 
 // mkdir/rmdir
 // rename
@@ -22,7 +28,7 @@ class T3kLock {
 	
 	var $lockrootdir = __DIR__;
 	var $lockfilesuffix = ".lock";
-	var $locktype = 0; // 0 = mkdir/rmdir; 1 = rename; 3 = PDO; 4 = UUID/filename (TODO)
+	var $locktype = 0; // 0 = mkdir/rmdir; 1 = rename; 3 = PDO; 4 = PDO with GET_LOCK() (MySQL)
 	
 	/*
 	 * Database structure:
@@ -41,6 +47,9 @@ class T3kLock {
 			"select" => "SELECT t3klocks from t3klocks WHERE t3klocks=?",
 	);
 	
+	// PDO get_lock
+	var $pdogetlocktimeout = 60;
+	
 	public function setRootDir($rootdir) {
 		$this->lockrootdir = $rootdir;
 	}
@@ -52,7 +61,7 @@ class T3kLock {
 	public function setLockType($locktype) {
 		if (is_numeric($locktype) == false) $locktype = 0;
 		if ($locktype < 0)  $locktype = 0;
-		if ($locktype > 3)  $locktype = 3;
+		if ($locktype > 4)  $locktype = 4;
 		$this->locktype = $locktype;
 	}
 	
@@ -64,6 +73,10 @@ class T3kLock {
 	
 	public function setDBOperations($pdooperation) {
 		$this->pdooperation = $pdooperation;
+	}
+	
+	public function setDBGetLockTimeout($timeout) {
+		$this->pdogetlocktimeout = $timeout;
 	}
 	
 	public function lock($id) {
@@ -95,6 +108,16 @@ class T3kLock {
 				return false;	
 			}			
 		}
+		if ($this->locktype == 4) {
+			try {
+				$this->pdoArray[$id] = new PDO($this->pdodsn);
+				$data = array($id,$this->pdogetlocktimeout);
+				$STH = $this->pdoArray[$id]->prepare("SELECT GET_LOCK('?','?')");
+				$STH->execute($data);
+			}catch(PDOException $e) {
+				return false;
+			}
+		}
 		
 		return true;
 	}
@@ -123,6 +146,16 @@ class T3kLock {
 				$data = array($id);
 				$STH = $this->pdoArray[$id]->prepare($this->pdooperation["delete"]);
 				$STH->execute($data);				
+			}catch(PDOException $e) {
+				return false;
+			}
+		}
+		if ($this->locktype == 4) {
+			try {
+				$this->pdoArray[$id] = new PDO($this->pdodsn);
+				$data = array($id);
+				$STH = $this->pdoArray[$id]->prepare("SELECT RELEASE_LOCK('?')");
+				$STH->execute($data);
 			}catch(PDOException $e) {
 				return false;
 			}
@@ -157,6 +190,18 @@ class T3kLock {
 				while($row = $STH->fetch()) {
 					return true;
 				}
+			}catch(PDOException $e) {
+				return true;
+			}
+		}
+		if ($this->locktype == 4) {
+			try {
+				$this->pdoArray[$id] = new PDO($this->pdodsn);
+				$data = array($id);
+				$STH = $this->pdoArray[$id]->prepare("SELECT IS_FREE_LOCK('?')");
+				$STH->execute($data);
+				$res = $STH->fetchAll();
+				if ($res[0][0] == 1) return false;
 			}catch(PDOException $e) {
 				return true;
 			}
