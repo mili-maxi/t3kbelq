@@ -13,8 +13,8 @@ This is only a prototype, which was born out of frustration, that other availabl
 
 Apache license was chosen as a compromise, since it does not make any "lock-in" (like copyright licences) nor "lock-out" (like too radical copyleft licences). Some other available libraries have that issues...
 
-Examples
-========
+Trivial examples
+================
 
 Simple lock usage:
 ------------------
@@ -32,7 +32,7 @@ $lock->unlock("blabla");
 echo "blabla is locked (step 3):" . $lock->islocked("blabla") . "<BR>";
 
 2. The subdirectory locker must be preexistant.
-Lock control is the renaiming of "blabla" from/to "blabla.lock".
+Lock control is the renaming of "blabla" from/to "blabla.lock".
 Either "blabla" or "blabla.lock" must preexist, according to wanted initial state.
 
 $lock = new T3kLock();
@@ -130,4 +130,35 @@ queueing
 - public function setDirectoryDivider($queueDivider)
 - public function setDBOperations($pdooperation)
 - public function setDBBindings($pdobindings)
+
+
+Proper locking trivial example
+==============================
+
+<?php
+	$lock = new T3kLock();
+	$lock->setRootDir(__DIR__ . "\\locker\\");
+	$lock->setLockType(0);
+	$result = $lock->trylockuntiltimeout("anylock99", 30, 100);
+	if ($result == false) {
+		echo "Locking failed. Timeout or other error!";
+	} else {
+		echo "Anylock99 succedeed!";
+	}
+	echo "Is Anylock99?" . $lock->islocked("anylock99") . "<BR>";
+	$result = $result->unlock("anylock99");
+	if ($result == false) {
+		echo "Clearing lock failed!";
+	} else {
+		echo "Clearing lock succeeded!";
+	}
+	echo "Still Anylock99?" . $lock->islocked("anylock99") . "<BR>";
+?php>
+
+"trylockuntiltimeout" has three parameters: opaque unique lock id, timeout to try and a random pause between retries.
+Opaque unique lock id is mandatory. If omited, timeout and random pause are used by their default values.
+
+Experimental symlink locking
+============================
+Use at your own risk. Will need special permission in Windows Vista and higher.
 

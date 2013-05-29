@@ -2,18 +2,36 @@
 
 
 /* 
- * t3kbelq - Trickery best effort locking and queueing
- * 
- * 2013 by Alen Milincevic
- * licensed under : http://www.apache.org/licenses/LICENSE-2.0.html
+* 	t3kbelq - Trickery best effort locking and queueing
+* 
+*	@version 1.0
+*	@author Alen Milincevic
+*
+*	@section LICENSE
+*
+*	Copyright 2013 Alen Milincevic
+*
+*	Licensed under the Apache License, Version 2.0 (the "License");
+*	you may not use this file except in compliance with the License.
+*	You may obtain a copy of the License at
+*
+*	http://www.apache.org/licenses/LICENSE-2.0
+*
+*	Unless required by applicable law or agreed to in writing, software
+*	distributed under the License is distributed on an "AS IS" BASIS,
+*	WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+*	See the License for the specific language governing permissions and
+*	limitations under the License.
 */
 
 /* - Simple file and PDO based locking mechanism
  * - Simple directory and PDO based queue mechanism
  * 
- * Not implemented, since php built in functionality:
+ * Not implemented, since php built in functionality (or would require major custom php to run):
  * - System V semaphores
  * - php pthreads functionality
+ * - memcache(d)
+ * 
  */
 
 // mkdir/rmdir
@@ -28,11 +46,15 @@ class T3kLock {
 	
 	var $lockrootdir = __DIR__;
 	var $lockfilesuffix = ".lock";
-	var $locktype = 0; // 0 = mkdir/rmdir; 1 = rename; 3 = PDO; 4 = PDO with GET_LOCK() (MySQL)
+	
+	// 0 = mkdir/rmdir; 1 = rename;
+	// 3 = PDO; 4 = PDO with GET_LOCK() (MySQL);
+	// 5 = symbolic link -> TODO: more testing. NOTE: Requires special privilegies under Windows!
+	var $locktype = 0; 
 	
 	/*
 	 * Database structure:
-	 * 
+	 * TODO - describe
 	 */
 	
 	var $pdoArray = ""; // for PDO reference
@@ -61,7 +83,7 @@ class T3kLock {
 	public function setLockType($locktype) {
 		if (is_numeric($locktype) == false) $locktype = 0;
 		if ($locktype < 0)  $locktype = 0;
-		if ($locktype > 4)  $locktype = 4;
+		if ($locktype > 5)  $locktype = 5;
 		$this->locktype = $locktype;
 	}
 	
@@ -118,8 +140,43 @@ class T3kLock {
 				return false;
 			}
 		}
+		/* Warning! Experimental. For Windows Vista/7, the policy must be updated in order to work
+		 * TODO: more testing */
+		if ($this->locktype == 5) {
+			clearstatcache();
+			if (@symlink($this->lockrootdir . $id . $this->lockfilesuffix,$this->lockrootdir . $id) == false)
+				return false;
+		}
 		
 		return true;
+	}
+	
+	/**
+	 * Locking with timeout. This is the main function, that is to be used.
+	 * 
+	 * @param string $id Any unique opaque string
+	 * @param number $timeout the timeout in sec to wait for
+	 * @param number $randomretrymsec radnom retry msec pause, for better random thread concurrency
+	 * @return boolean true if successfully locked, false otherwise
+	 */
+	public function trylockuntiltimeout($id, $timeout = 30, $randomretrymsec = 100) {
+		$looping = true;
+		$timer = time();
+		while($looping == true){
+			$locktry = $this->lock($id);
+			$looping = false;
+			if ($locktry == false) {
+				$retry = mt_rand(0,$randomretrymsec);
+				usleep($retry);
+				$looping = true;
+			}
+			// timeout
+			if ( (time() - $timer) > $timeout) {
+				$locktry = false;
+				$looping = false; 						
+			}
+		}
+		return $locktry;		
 	}
 	
 	public function unlock($id) {
@@ -159,6 +216,13 @@ class T3kLock {
 			}catch(PDOException $e) {
 				return false;
 			}
+		}
+		/* Warning! Experimental. For Windows Vista/7, the policy must be updated in order to work
+		 * TODO: more testing */
+		if ($this->locktype == 5) {
+			clearstatcache();
+			if (unlink($this->lockrootdir . $id) == false)
+				return false;
 		}
 		
 		return true;
@@ -205,6 +269,13 @@ class T3kLock {
 			}catch(PDOException $e) {
 				return true;
 			}
+		}
+		/* Warning! Experimental. For Windows Vista/7, the policy must be updated in order to work
+		 * TODO: more testing */
+		if ($this->locktype == 5) {
+			clearstatcache();
+			if (is_link($this->lockrootdir . $id))
+				return true;
 		}
 		
 		return false;
@@ -279,7 +350,7 @@ class T3kQueue {
 			try {
 				$pdo = new PDO($this->pdodsn);
 
-				//$currenttime = time();
+				//$currenttime = time(); // due to a weird MySQL bug, this is deprecated
 				$currenttime = date('Y-m-d H:i:s');
 				
 				$data = array($someid . "." . $id,$data,$currenttime);
