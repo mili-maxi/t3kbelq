@@ -4,7 +4,7 @@
 /* 
 * 	t3kbelq - Trickery best effort locking and queueing
 * 
-*	@version 1.0
+*	@version 1.0.1.
 *	@author Alen Milincevic
 *
 *	@section LICENSE
@@ -28,9 +28,10 @@
  * - Simple directory and PDO based queue mechanism
  * 
  * Not implemented, since php built in functionality (or would require major custom php to run):
- * - System V semaphores
- * - php pthreads functionality
- * - memcache(d)
+ * - System V semaphores (http://php.net/manual/en/book.sem.php) (pipelineing, queues)
+ * - php pthreads functionality (http://php.net/manual/en/book.pthreads.php)
+ * - memcache(d) (http://php.net/manual/en/book.memcache.php)
+ * - shared memory (http://php.net/manual/en/book.shmop.php)
  * 
  */
 
@@ -42,6 +43,17 @@
  * therefore aditional check is done
 */
 
+/*
+ * Database (row) format for lock (default DB name: t3klocks )::
+ *  - t3klocks - UNIQUE (important, must be UNIQUE!), varchar(255)
+ *  
+ * Database (row) format for queue (default DB name: t3kqueue ):
+ *  - t3kqueue - UNIQUE (important, must be UNIQUE!), varchar(255)
+ *  - t3kdata, varchar(255)
+ *  - t3kdate, varchar(255)
+ *  
+ */
+
 class T3kLock {
 	
 	var $lockrootdir = __DIR__;
@@ -50,6 +62,7 @@ class T3kLock {
 	// 0 = mkdir/rmdir; 1 = rename;
 	// 3 = PDO; 4 = PDO with GET_LOCK() (MySQL);
 	// 5 = symbolic link -> TODO: more testing. NOTE: Requires special privilegies under Windows!
+	// 6 = chmod (readonly/notreadonly manipulation). Might only work on Linux/POSIX, not on Windows.
 	var $locktype = 0; 
 	
 	/*
@@ -83,7 +96,7 @@ class T3kLock {
 	public function setLockType($locktype) {
 		if (is_numeric($locktype) == false) $locktype = 0;
 		if ($locktype < 0)  $locktype = 0;
-		if ($locktype > 5)  $locktype = 5;
+		if ($locktype > 6)  $locktype = 6;
 		$this->locktype = $locktype;
 	}
 	
@@ -147,6 +160,12 @@ class T3kLock {
 			if (@symlink($this->lockrootdir . $id . $this->lockfilesuffix,$this->lockrootdir . $id) == false)
 				return false;
 		}
+		/* The file with the name of $id MUST EXIST prior to mode change trying.*/
+		if ($this->locktype == 6) {
+			clearstatcache();
+			if (chmod($this->lockrootdir . $id, 0400) == false)
+				return false;
+		}
 		
 		return true;
 	}
@@ -155,8 +174,8 @@ class T3kLock {
 	 * Locking with timeout. This is the main function, that is to be used.
 	 * 
 	 * @param string $id Any unique opaque string
-	 * @param number $timeout the timeout in sec to wait for
-	 * @param number $randomretrymsec radnom retry msec pause, for better random thread concurrency
+	 * @param number $timeout the timeout in msec to wait for
+	 * @param number $randomretrymsec radnom retry pause, for better random thread concurrency
 	 * @return boolean true if successfully locked, false otherwise
 	 */
 	public function trylockuntiltimeout($id, $timeout = 30, $randomretrymsec = 100) {
@@ -166,8 +185,10 @@ class T3kLock {
 			$locktry = $this->lock($id);
 			$looping = false;
 			if ($locktry == false) {
-				$retry = mt_rand(0,$randomretrymsec);
-				usleep($retry);
+				if ($randomretrymsec > 0) {
+					$retry = mt_rand(0,$randomretrymsec);
+					usleep($retry);
+				}				
 				$looping = true;
 			}
 			// timeout
@@ -209,7 +230,7 @@ class T3kLock {
 		}
 		if ($this->locktype == 4) {
 			try {
-				$this->pdoArray[$id] = new PDO($this->pdodsn);
+				//$this->pdoArray[$id] = new PDO($this->pdodsn); // reuse the pdo, as mysql works this way
 				$data = array($id);
 				$STH = $this->pdoArray[$id]->prepare("SELECT RELEASE_LOCK('?')");
 				$STH->execute($data);
@@ -222,6 +243,12 @@ class T3kLock {
 		if ($this->locktype == 5) {
 			clearstatcache();
 			if (unlink($this->lockrootdir . $id) == false)
+				return false;
+		}
+		/* The file with the name of $id MUST EXIST prior to mode change trying.*/
+		if ($this->locktype == 6) {
+			clearstatcache();
+			if (chmod($this->lockrootdir . $id, 0600) == false)
 				return false;
 		}
 		
@@ -277,6 +304,17 @@ class T3kLock {
 			if (is_link($this->lockrootdir . $id))
 				return true;
 		}
+		if ($this->locktype == 6) {
+			clearstatcache();
+			/* Create a dummy file for attribute changes, if not existing(if possible).
+			 * This does not delete the file, if lock is released! */
+			if (file_exists ($this->lockrootdir) == false) {
+				if (file_put_contents($this->lockrootdir . $id, "") == false)
+					return false;
+			}			
+			if (is_writeable($this->lockrootdir . $id) == false)
+				return true;
+		}
 		
 		return false;
 	}
@@ -298,6 +336,8 @@ class T3kQueue {
 	var $pdodsn = "";
 	var $pdousername = "";
 	var $pdopassword = "";
+	
+	var $usepid = false;
 	
 	// PDO insert/delete/select
 	var $pdooperation = array(
@@ -342,8 +382,13 @@ class T3kQueue {
 		$this->pdobindings = $pdobindings;
 	}
 	
+	public function usePid($usepid) {
+		$this->$usepid = $usepid;
+	}
+	
 	public function addToQueue($id, $data) {
 		$someid = base64_encode(uniqid());
+		if ($this->$usepid == true) $somesid = $somesid . base64_encode(getmypid());
 		
 		if ($this->queuetype == 2) {
 			$pdoresult = "";
